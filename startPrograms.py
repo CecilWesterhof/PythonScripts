@@ -31,6 +31,8 @@ CREATE  TABLE desktopCommands(
 
     CONSTRAINT isActive  CHECK(isActive IN ('T', 'F')),
 
+    FOREIGN KEY(name) REFERENCES desktops(name),
+
     PRIMARY KEY(name, command)
 );
 CREATE  TABLE desktops(
@@ -60,7 +62,11 @@ from subprocess import check_call, Popen, STDOUT
 from sys        import exit, argv
 from time       import sleep, strftime
 
-
+'''
+When defined closes cursor and conn. Does a commit.
+In this case a commit is not necessary, but I do it anyway:
+saveguard for when the code changes.
+'''
 def deinit():
     global conn
     global cursor
@@ -69,6 +75,7 @@ def deinit():
         cursor.close()
         cursor = None
     if conn:
+        conn.commit()
         conn.close()
         conn   = None
 
@@ -92,11 +99,24 @@ def do_desktop(desktop_values):
             Popen(command, stdout = log_file, cwd = directory, stderr = STDOUT)
     sleep(desktop_wait)
 
-def give_error(message):
+'''
+Give error message.
+Do a rollback when not overriden.
+deinit
+exit
+'''
+def give_error(message, do_rollback = True):
     print(message)
+    if do_rollback and conn:
+        conn.rollback()
     deinit()
     exit(1)
 
+'''
+Initialize global variables.
+Create connection and cursor.
+Uses the enironment variable PYTHON_START_PROGRAMS_DB to get the used db.
+'''
 def init():
     global conn
     global cursor
@@ -109,8 +129,9 @@ def init():
     database                = environ.get('PYTHON_START_PROGRAMS_DB',
                                           '~/Databases/general.sqlite')
     default_seconds_to_wait = 10
-    this_desktop            = None
-
+    pragma_commands         = '''
+        PRAGMA foreign_keys = ON;
+    '''
     select_commands         = '''
         SELECT   command
         ,        logDir
@@ -138,9 +159,15 @@ def init():
         FROM    variables
         WHERE   name = ?
     '''
+    this_desktop            = None
 
     conn    = connect(expanduser(database))
     cursor  = conn.cursor()
+    cursor.execute(pragma_commands)
+    if cursor.execute('PRAGMA integrity_check').fetchall()[0][0] != 'ok':
+        give_error('ERROR: integrity error')
+    if len(cursor.execute('PRAGMA foreign_key_check').fetchall()) != 0:
+            give_error('ERROR: foreign key error')
     if len(argv) > 2:
         give_error('ERROR: %s [DESKTOP_NAME]' % argv[0])
     if len(argv) == 2:
@@ -159,7 +186,6 @@ def init():
     if len(result) == 1:
         default_seconds_to_wait = int(result[0][0])
     chdir(expanduser('~'))
-
 
 init()
 
